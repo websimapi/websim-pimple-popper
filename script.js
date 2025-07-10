@@ -4,6 +4,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 const gameArea = document.getElementById('game-area');
+const particleContainer = document.getElementById('particle-container');
 const scoreEl = document.getElementById('score');
 const loadingOverlay = document.getElementById('loading-overlay');
 let score = 0;
@@ -13,10 +14,10 @@ let audioInitialized = false;
 
 // --- Three.js Setup ---
 let scene, camera, renderer, faceMesh, controls;
-let skinnedMeshWithMorphs; // Will hold the mesh with facial expressions
 let raycaster, mouse;
 const pimples = [];
 const MAX_PIMPLES = 20;
+let faceOnlyMesh; // Separate reference for face geometry
 
 function init3D() {
     scene = new THREE.Scene();
@@ -78,16 +79,10 @@ function loadFaceModel() {
                     child.material = material;
                     // Flag the face mesh to distinguish from pimples
                     child.userData.isFace = true; 
+                    faceOnlyMesh = child; // Store a direct reference to the face mesh
                     // Store vertex data for pimple placement
                     child.geometry.computeVertexNormals();
                     child.geometry.setAttribute('initialPosition', child.geometry.attributes.position.clone());
-
-                    // Find the mesh with morph targets for facial animation
-                    if (child.morphTargetInfluences) {
-                        skinnedMeshWithMorphs = child;
-                        // Reset all expressions initially
-                         skinnedMeshWithMorphs.morphTargetInfluences.fill(0);
-                    }
                 }
             });
             
@@ -143,55 +138,6 @@ function playPopSound() {
     source.start(0);
 }
 
-// --- Facial Animation ---
-let isAnimatingMouth = false;
-function animateMouth() {
-    if (!skinnedMeshWithMorphs || isAnimatingMouth) return;
-
-    isAnimatingMouth = true;
-    const mouthOpenIndex = skinnedMeshWithMorphs.morphTargetDictionary['MouthOpen'];
-    if (mouthOpenIndex === undefined) {
-        console.warn("MouthOpen morph target not found.");
-        isAnimatingMouth = false;
-        return;
-    }
-
-    const duration = 150; // ms to open mouth
-    const hold = 100; // ms to keep mouth open
-    const startTime = performance.now();
-
-    function openMouth(time) {
-        const elapsedTime = time - startTime;
-        const progress = Math.min(elapsedTime / duration, 1);
-        skinnedMeshWithMorphs.morphTargetInfluences[mouthOpenIndex] = progress;
-
-        if (progress < 1) {
-            requestAnimationFrame(openMouth);
-        } else {
-            setTimeout(closeMouth, hold);
-        }
-    }
-
-    function closeMouth() {
-        const closeStartTime = performance.now();
-        function close(time) {
-            const elapsedTime = time - closeStartTime;
-            const progress = Math.min(elapsedTime / (duration * 2), 1); // Close slower
-            skinnedMeshWithMorphs.morphTargetInfluences[mouthOpenIndex] = 1 - progress;
-
-            if (progress < 1) {
-                requestAnimationFrame(close);
-            } else {
-                skinnedMeshWithMorphs.morphTargetInfluences[mouthOpenIndex] = 0;
-                isAnimatingMouth = false;
-            }
-        }
-        requestAnimationFrame(close);
-    }
-
-    requestAnimationFrame(openMouth);
-}
-
 // --- Pimple Logic ---
 function createPimple() {
     if (!faceMesh || pimples.length >= MAX_PIMPLES) return;
@@ -235,12 +181,38 @@ function onCanvasClick(event) {
     mouse.y = -((event.clientY - gameRect.top) / gameRect.height) * 2 + 1;
 
     raycaster.setFromCamera(mouse, camera);
-    const intersects = raycaster.intersectObjects(scene.children, true);
 
-    for (const intersect of intersects) {
+    // Prioritize popping pimples directly
+    const pimpleIntersects = raycaster.intersectObjects(pimples, false);
+    for (const intersect of pimpleIntersects) {
         if (intersect.object.userData.isPimple && !intersect.object.userData.popped) {
             popPimple(intersect.object);
-            break; 
+            return; // Pimple popped, no need to check face
+        }
+    }
+    
+    // If no pimple was hit directly, check if the click was on the face near a pimple
+    if (!faceOnlyMesh) return;
+    const faceIntersects = raycaster.intersectObject(faceOnlyMesh, false);
+    if (faceIntersects.length > 0) {
+        const intersectionPoint = faceIntersects[0].point;
+        
+        let closestPimple = null;
+        let minDistanceSq = Infinity;
+        const popRadius = 0.15; // Increased radius for easier popping
+
+        pimples.forEach(pimple => {
+            if (!pimple.userData.popped) {
+                const distanceSq = intersectionPoint.distanceToSquared(pimple.position);
+                if (distanceSq < minDistanceSq) {
+                    minDistanceSq = distanceSq;
+                    closestPimple = pimple;
+                }
+            }
+        });
+
+        if (closestPimple && minDistanceSq < (popRadius * popRadius)) {
+            popPimple(closestPimple);
         }
     }
 }
@@ -249,7 +221,6 @@ function popPimple(pimpleMesh) {
     if (pimpleMesh.userData.popped) return;
 
     playPopSound();
-    animateMouth();
     
     pimpleMesh.userData.popped = true;
 
@@ -267,6 +238,8 @@ function popPimple(pimpleMesh) {
         colors: ['#FFFF00', '#FFFACD', '#FAFAD2', '#FFFFFF'],
         scalar: Math.random() * 0.5 + 0.75
     });
+
+    createPopParticle(screenPos);
 
     // Animate pop
     pimpleMesh.material.color.set(0x5a2d2d);
@@ -286,18 +259,31 @@ function popPimple(pimpleMesh) {
     setTimeout(fade, 100);
 }
 
+function createPopParticle(screenPos) {
+    const particle = document.createElement('div');
+    particle.className = 'pop-particle';
+    const size = Math.random() * 20 + 15; // 15px to 35px
+    particle.style.width = `${size}px`;
+    particle.style.height = `${size}px`;
+    particle.style.left = `${screenPos.x * 100}%`;
+    particle.style.top = `${screenPos.y * 100}%`;
+    
+    particleContainer.appendChild(particle);
+    
+    // Clean up the particle from the DOM after animation
+    setTimeout(() => {
+        particle.remove();
+    }, 400); // Must match animation duration
+}
+
 function toScreenPosition(obj, camera) {
     const vector = new THREE.Vector3();
     obj.getWorldPosition(vector);
     vector.project(camera);
 
-    const gameRect = gameArea.getBoundingClientRect();
-    vector.x = (vector.x * 0.5 + 0.5) * gameRect.width + gameRect.left;
-    vector.y = (vector.y * -0.5 + 0.5) * gameRect.height + gameRect.top;
-
     return {
-        x: vector.x / window.innerWidth,
-        y: vector.y / window.innerHeight
+        x: (vector.x * 0.5 + 0.5),
+        y: (vector.y * -0.5 + 0.5)
     };
 }
 
