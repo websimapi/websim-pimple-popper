@@ -35,7 +35,7 @@ function init3D() {
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
     controls.enablePan = false;
-    controls.minDistance = 1.5;
+    controls.minDistance = 2.0;
     controls.maxDistance = 4;
     controls.target.set(0, -0.2, 0);
 
@@ -199,7 +199,7 @@ function onCanvasClick(event) {
         
         let closestPimple = null;
         let minDistanceSq = Infinity;
-        const popRadius = 0.15; // Increased radius for easier popping
+        const popRadius = 0.25; // Increased radius for easier popping
 
         pimples.forEach(pimple => {
             if (!pimple.userData.popped) {
