@@ -13,6 +13,7 @@ let audioInitialized = false;
 
 // --- Three.js Setup ---
 let scene, camera, renderer, faceMesh, controls;
+let skinnedMeshWithMorphs; // Will hold the mesh with facial expressions
 let raycaster, mouse;
 const pimples = [];
 const MAX_PIMPLES = 20;
@@ -80,6 +81,13 @@ function loadFaceModel() {
                     // Store vertex data for pimple placement
                     child.geometry.computeVertexNormals();
                     child.geometry.setAttribute('initialPosition', child.geometry.attributes.position.clone());
+
+                    // Find the mesh with morph targets for facial animation
+                    if (child.morphTargetInfluences) {
+                        skinnedMeshWithMorphs = child;
+                        // Reset all expressions initially
+                         skinnedMeshWithMorphs.morphTargetInfluences.fill(0);
+                    }
                 }
             });
             
@@ -133,6 +141,55 @@ function playPopSound() {
     source.buffer = popSoundBuffer;
     source.connect(audioContext.destination);
     source.start(0);
+}
+
+// --- Facial Animation ---
+let isAnimatingMouth = false;
+function animateMouth() {
+    if (!skinnedMeshWithMorphs || isAnimatingMouth) return;
+
+    isAnimatingMouth = true;
+    const mouthOpenIndex = skinnedMeshWithMorphs.morphTargetDictionary['MouthOpen'];
+    if (mouthOpenIndex === undefined) {
+        console.warn("MouthOpen morph target not found.");
+        isAnimatingMouth = false;
+        return;
+    }
+
+    const duration = 150; // ms to open mouth
+    const hold = 100; // ms to keep mouth open
+    const startTime = performance.now();
+
+    function openMouth(time) {
+        const elapsedTime = time - startTime;
+        const progress = Math.min(elapsedTime / duration, 1);
+        skinnedMeshWithMorphs.morphTargetInfluences[mouthOpenIndex] = progress;
+
+        if (progress < 1) {
+            requestAnimationFrame(openMouth);
+        } else {
+            setTimeout(closeMouth, hold);
+        }
+    }
+
+    function closeMouth() {
+        const closeStartTime = performance.now();
+        function close(time) {
+            const elapsedTime = time - closeStartTime;
+            const progress = Math.min(elapsedTime / (duration * 2), 1); // Close slower
+            skinnedMeshWithMorphs.morphTargetInfluences[mouthOpenIndex] = 1 - progress;
+
+            if (progress < 1) {
+                requestAnimationFrame(close);
+            } else {
+                skinnedMeshWithMorphs.morphTargetInfluences[mouthOpenIndex] = 0;
+                isAnimatingMouth = false;
+            }
+        }
+        requestAnimationFrame(close);
+    }
+
+    requestAnimationFrame(openMouth);
 }
 
 // --- Pimple Logic ---
@@ -192,6 +249,7 @@ function popPimple(pimpleMesh) {
     if (pimpleMesh.userData.popped) return;
 
     playPopSound();
+    animateMouth();
     
     pimpleMesh.userData.popped = true;
 
