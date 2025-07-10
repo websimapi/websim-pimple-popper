@@ -75,6 +75,8 @@ function loadFaceModel() {
             faceMesh.traverse((child) => {
                 if (child.isMesh) {
                     child.material = material;
+                    // Flag the face mesh to distinguish from pimples
+                    child.userData.isFace = true; 
                     // Store vertex data for pimple placement
                     child.geometry.computeVertexNormals();
                     child.geometry.setAttribute('initialPosition', child.geometry.attributes.position.clone());
@@ -138,10 +140,18 @@ function createPimple() {
     if (!faceMesh || pimples.length >= MAX_PIMPLES) return;
 
     let targetMesh;
-    faceMesh.traverse(child => { if(child.isMesh) targetMesh = child; });
-    if(!targetMesh) return;
+    // Traverse to find only the face mesh, not other pimples.
+    faceMesh.traverse(child => { if(child.isMesh && child.userData.isFace) targetMesh = child; });
+    if(!targetMesh) {
+        console.error("Could not find face mesh to spawn pimple on.");
+        return;
+    }
 
     const positionAttribute = targetMesh.geometry.getAttribute('initialPosition');
+    if (!positionAttribute) {
+        console.error("Face mesh is missing 'initialPosition' attribute.");
+        return;
+    }
     const vertexIndex = Math.floor(Math.random() * positionAttribute.count);
     
     const pimplePosition = new THREE.Vector3().fromBufferAttribute(positionAttribute, vertexIndex);
