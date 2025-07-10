@@ -1,6 +1,7 @@
 import confetti from 'canvas-confetti';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 const gameArea = document.getElementById('game-area');
 const scoreEl = document.getElementById('score');
@@ -11,10 +12,8 @@ let popSoundBuffer;
 let audioInitialized = false;
 
 // --- Three.js Setup ---
-let scene, camera, renderer, faceMesh;
+let scene, camera, renderer, faceMesh, controls;
 let raycaster, mouse;
-let isDragging = false;
-let previousMousePosition = { x: 0, y: 0 };
 const pimples = [];
 const MAX_PIMPLES = 20;
 
@@ -29,6 +28,14 @@ function init3D() {
     renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setSize(gameRect.width, gameRect.height);
     gameArea.appendChild(renderer.domElement);
+    
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+    controls.enablePan = false;
+    controls.minDistance = 1.5;
+    controls.maxDistance = 4;
+    controls.target.set(0, -0.2, 0);
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     scene.add(ambientLight);
@@ -43,18 +50,15 @@ function init3D() {
     loadFaceModel();
 
     // Event listeners for interaction
-    gameArea.addEventListener('mousedown', onMouseDown);
-    gameArea.addEventListener('mousemove', onMouseMove);
-    gameArea.addEventListener('mouseup', onMouseUp);
-    gameArea.addEventListener('mouseleave', onMouseUp); // Stop dragging if mouse leaves
     gameArea.addEventListener('click', onCanvasClick);
     window.addEventListener('resize', onWindowResize);
 }
 
 function loadFaceModel() {
     const loader = new GLTFLoader();
+    // Using a different, more standard GLB model to ensure compatibility
     loader.load(
-        'https://threejs.org/examples/models/gltf/face.gltf',
+        'https://threejs.org/examples/models/gltf/LeePerrySmith/LeePerrySmith.glb',
         (gltf) => {
             faceMesh = gltf.scene;
             const skinTexture = new THREE.TextureLoader().load('skin.png');
@@ -77,7 +81,7 @@ function loadFaceModel() {
                 }
             });
             
-            faceMesh.scale.set(1.4, 1.4, 1.4);
+            faceMesh.scale.set(0.7, 0.7, 0.7);
             faceMesh.position.y = -0.5;
             scene.add(faceMesh);
             loadingOverlay.style.display = 'none';
@@ -98,33 +102,6 @@ function onWindowResize() {
         camera.updateProjectionMatrix();
         renderer.setSize(gameRect.width, gameRect.height);
     }
-}
-
-// --- Face Rotation Controls ---
-function onMouseDown(event) {
-    isDragging = true;
-    gameArea.style.cursor = 'grabbing';
-    previousMousePosition = { x: event.clientX, y: event.clientY };
-}
-
-function onMouseMove(event) {
-    if (!isDragging || !faceMesh) return;
-
-    const deltaMove = {
-        x: event.clientX - previousMousePosition.x,
-        y: event.clientY - previousMousePosition.y
-    };
-
-    const rotationSpeed = 0.005;
-    faceMesh.rotation.y += deltaMove.x * rotationSpeed;
-    faceMesh.rotation.x += deltaMove.y * rotationSpeed;
-
-    previousMousePosition = { x: event.clientX, y: event.clientY };
-}
-
-function onMouseUp() {
-    isDragging = false;
-    gameArea.style.cursor = 'grab';
 }
 
 // --- Audio Setup ---
@@ -183,9 +160,8 @@ function createPimple() {
 }
 
 function onCanvasClick(event) {
-    // This allows dragging without popping
-    const timeSinceMouseDown = event.timeStamp - (event.target.lastMouseDown || 0);
-    if (isDragging && timeSinceMouseDown > 200) return;
+    // Basic debounce to prevent click firing immediately after drag
+    if (controls.isDragging) return;
 
     const gameRect = gameArea.getBoundingClientRect();
     mouse.x = ((event.clientX - gameRect.left) / gameRect.width) * 2 - 1;
@@ -286,11 +262,9 @@ function startGame() {
 
 function animate() {
     requestAnimationFrame(animate);
+    if(controls) controls.update(); // update controls on each frame
     renderer.render(scene, camera);
 }
 
 init3D();
 animate();
-
-// Helper for click vs drag logic
-gameArea.addEventListener('mousedown', (e) => e.target.lastMouseDown = e.timeStamp);
