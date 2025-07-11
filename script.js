@@ -242,11 +242,14 @@ function onPointerDown(event) {
         if (object.userData.isIngrownHair) {
             controls.enabled = false; // Disable camera controls during pluck
 
-            const hairGeometry = new THREE.CylinderGeometry(0.003, 0.003, 1, 6);
-            hairGeometry.translate(0, 0.5, 0); // Anchor at the bottom
+            const hairGeometry = new THREE.CylinderGeometry(0.003, 0.003, 0.2, 6); // Set a max length of 0.2
+            hairGeometry.translate(0, 0.1, 0); // Anchor at the bottom
             const hairMaterial = new THREE.MeshBasicMaterial({ color: 0x24170d });
             const hairMesh = new THREE.Mesh(hairGeometry, hairMaterial);
             
+            // Set initial scale to 0 to prevent glitching
+            hairMesh.scale.y = 0;
+
             // Position and orient the base of the hair
             const worldPosition = new THREE.Vector3();
             object.getWorldPosition(worldPosition);
@@ -274,13 +277,23 @@ function onPointerMove(event) {
     const currentDrag = new THREE.Vector2(event.clientX, event.clientY);
     const dragDistance = currentDrag.distanceTo(startDrag);
 
-    // Update hair length and orientation
-    const pullVector = currentDrag.clone().sub(startDrag).normalize();
-    const angle = Math.atan2(pullVector.y, pullVector.x);
-    
-    hairMesh.scale.y = dragDistance / 1000; // Visual stretch
-    hairMesh.rotation.z = -angle + Math.PI / 2;
+    // Update hair length based on drag, capping at the threshold
+    const pullRatio = Math.min(dragDistance / PULL_THRESHOLD, 1.0);
+    hairMesh.scale.y = pullRatio;
 
+    // Update hair orientation to follow the cursor
+    const gameRect = gameArea.getBoundingClientRect();
+    const hairScreenPos = toScreenPosition(hairMesh, camera);
+    const hairScreenVec = new THREE.Vector2(
+        (hairScreenPos.x * window.innerWidth) - gameRect.left,
+        (hairScreenPos.y * window.innerHeight) - gameRect.top
+    );
+    const pullVector = currentDrag.clone().sub(hairScreenVec).normalize();
+    const angle = Math.atan2(pullVector.y, -pullVector.x);
+
+    // Apply rotation to the hair mesh to point towards cursor
+    hairMesh.rotation.z = angle + Math.PI / 2;
+    
 
     if (dragDistance > PULL_THRESHOLD) {
         pluckHair(hairGroup, hairMesh);
