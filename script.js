@@ -4,20 +4,22 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 const gameArea = document.getElementById('game-area');
-const particleContainer = document.getElementById('particle-container');
 const scoreEl = document.getElementById('score');
 const loadingOverlay = document.getElementById('loading-overlay');
 let score = 0;
 let audioContext;
 let popSoundBuffer;
+let pluckSoundBuffer;
 let audioInitialized = false;
 
 // --- Three.js Setup ---
 let scene, camera, renderer, faceMesh, controls;
 let raycaster, mouse;
 const pimples = [];
-const MAX_PIMPLES = 20;
-let faceOnlyMesh; // Separate reference for face geometry
+const ingrownHairs = [];
+const MAX_PIMPLES = 15;
+const MAX_INGROWN_HAIRS = 8;
+let currentPluckingAction = null;
 
 function init3D() {
     scene = new THREE.Scene();
@@ -35,7 +37,7 @@ function init3D() {
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
     controls.enablePan = false;
-    controls.minDistance = 2.0;
+    controls.minDistance = 1.5;
     controls.maxDistance = 4;
     controls.target.set(0, -0.2, 0);
 
@@ -52,7 +54,10 @@ function init3D() {
     loadFaceModel();
 
     // Event listeners for interaction
-    gameArea.addEventListener('click', onCanvasClick);
+    gameArea.addEventListener('pointerdown', onPointerDown);
+    gameArea.addEventListener('pointermove', onPointerMove);
+    gameArea.addEventListener('pointerup', onPointerUp);
+    gameArea.addEventListener('pointerleave', onPointerUp); // Treat leaving the area as pointer up
     window.addEventListener('resize', onWindowResize);
 }
 
@@ -79,7 +84,6 @@ function loadFaceModel() {
                     child.material = material;
                     // Flag the face mesh to distinguish from pimples
                     child.userData.isFace = true; 
-                    faceOnlyMesh = child; // Store a direct reference to the face mesh
                     // Store vertex data for pimple placement
                     child.geometry.computeVertexNormals();
                     child.geometry.setAttribute('initialPosition', child.geometry.attributes.position.clone());
@@ -114,9 +118,11 @@ async function initializeAudio() {
     if (audioInitialized) return;
     try {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const response = await fetch('pop.mp3');
-        const arrayBuffer = await response.arrayBuffer();
-        popSoundBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        const popPromise = fetch('pop.mp3').then(res => res.arrayBuffer()).then(buffer => audioContext.decodeAudioData(buffer));
+        const pluckPromise = fetch('pluck.mp3').then(res => res.arrayBuffer()).then(buffer => audioContext.decodeAudioData(buffer));
+
+        [popSoundBuffer, pluckSoundBuffer] = await Promise.all([popPromise, pluckPromise]);
+        
         audioInitialized = true;
     } catch (error) {
         console.error('Error initializing audio:', error);
@@ -134,6 +140,16 @@ function playPopSound() {
     }
     const source = audioContext.createBufferSource();
     source.buffer = popSoundBuffer;
+    source.connect(audioContext.destination);
+    source.start(0);
+}
+
+function playPluckSound() {
+    if (!audioInitialized || !pluckSoundBuffer) return;
+    if (audioContext.state === 'suspended') audioContext.resume();
+    
+    const source = audioContext.createBufferSource();
+    source.buffer = pluckSoundBuffer;
     source.connect(audioContext.destination);
     source.start(0);
 }
@@ -172,49 +188,171 @@ function createPimple() {
     pimples.push(pimpleMesh);
 }
 
-function onCanvasClick(event) {
-    // Basic debounce to prevent click firing immediately after drag
+// --- Ingrown Hair Logic ---
+function createIngrownHair() {
+    if (!faceMesh || ingrownHairs.length >= MAX_INGROWN_HAIRS) return;
+
+    let targetMesh;
+    faceMesh.traverse(child => { if (child.isMesh && child.userData.isFace) targetMesh = child; });
+    if (!targetMesh) return;
+
+    const positionAttribute = targetMesh.geometry.getAttribute('initialPosition');
+    if (!positionAttribute) return;
+    
+    const vertexIndex = Math.floor(Math.random() * positionAttribute.count);
+    const hairPosition = new THREE.Vector3().fromBufferAttribute(positionAttribute, vertexIndex);
+
+    const moundGeometry = new THREE.SphereGeometry(0.025, 16, 8, 0, Math.PI * 2, 0, Math.PI * 0.5);
+    const moundMaterial = new THREE.MeshStandardMaterial({ color: 0xdb8d7a, roughness: 0.8 });
+    const moundMesh = new THREE.Mesh(moundGeometry, moundMaterial);
+
+    const tipGeometry = new THREE.SphereGeometry(0.005, 8, 8);
+    const tipMaterial = new THREE.MeshBasicMaterial({ color: 0x24170d });
+    const tipMesh = new THREE.Mesh(tipGeometry, tipMaterial);
+    tipMesh.position.y = 0.001; 
+
+    const hairGroup = new THREE.Group();
+    hairGroup.add(moundMesh);
+    hairGroup.add(tipMesh);
+    hairGroup.position.copy(hairPosition);
+    hairGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), hairPosition.clone().normalize());
+
+    hairGroup.userData.isIngrownHair = true;
+    hairGroup.userData.base = moundMesh;
+    hairGroup.userData.tip = tipMesh;
+
+    faceMesh.add(hairGroup);
+    ingrownHairs.push(hairGroup);
+}
+
+function onPointerDown(event) {
     if (controls.isDragging) return;
 
-    const gameRect = gameArea.getBoundingClientRect();
-    mouse.x = ((event.clientX - gameRect.left) / gameRect.width) * 2 - 1;
-    mouse.y = -((event.clientY - gameRect.top) / gameRect.height) * 2 + 1;
+    const intersects = getIntersects(event.clientX, event.clientY);
+    if (!intersects.length) return;
 
-    raycaster.setFromCamera(mouse, camera);
+    // Check for ingrown hair first for plucking
+    for (const intersect of intersects) {
+        let object = intersect.object;
+        // Ascend the hierarchy to find the group
+        while(object.parent && !object.userData.isIngrownHair) {
+            object = object.parent;
+        }
 
-    // Prioritize popping pimples directly
-    const pimpleIntersects = raycaster.intersectObjects(pimples, false);
-    for (const intersect of pimpleIntersects) {
-        if (intersect.object.userData.isPimple && !intersect.object.userData.popped) {
-            popPimple(intersect.object);
-            return; // Pimple popped, no need to check face
+        if (object.userData.isIngrownHair) {
+            controls.enabled = false; // Disable camera controls during pluck
+
+            const hairGeometry = new THREE.CylinderGeometry(0.003, 0.003, 1, 6);
+            hairGeometry.translate(0, 0.5, 0); // Anchor at the bottom
+            const hairMaterial = new THREE.MeshBasicMaterial({ color: 0x24170d });
+            const hairMesh = new THREE.Mesh(hairGeometry, hairMaterial);
+            
+            // Position and orient the base of the hair
+            const worldPosition = new THREE.Vector3();
+            object.getWorldPosition(worldPosition);
+            hairMesh.position.copy(worldPosition);
+            hairMesh.quaternion.copy(object.quaternion);
+
+            scene.add(hairMesh);
+
+            currentPluckingAction = {
+                hairGroup: object,
+                hairMesh: hairMesh,
+                startDrag: new THREE.Vector2(event.clientX, event.clientY),
+            };
+            return;
         }
     }
+}
+
+function onPointerMove(event) {
+    if (!currentPluckingAction) return;
+
+    const { hairMesh, startDrag, hairGroup } = currentPluckingAction;
+    const PULL_THRESHOLD = 80; // pixels to drag
+
+    const currentDrag = new THREE.Vector2(event.clientX, event.clientY);
+    const dragDistance = currentDrag.distanceTo(startDrag);
+
+    // Update hair length and orientation
+    const pullVector = currentDrag.clone().sub(startDrag).normalize();
+    const angle = Math.atan2(pullVector.y, pullVector.x);
     
-    // If no pimple was hit directly, check if the click was on the face near a pimple
-    if (!faceOnlyMesh) return;
-    const faceIntersects = raycaster.intersectObject(faceOnlyMesh, false);
-    if (faceIntersects.length > 0) {
-        const intersectionPoint = faceIntersects[0].point;
-        
-        let closestPimple = null;
-        let minDistanceSq = Infinity;
-        const popRadius = 0.25; // Increased radius for easier popping
+    hairMesh.scale.y = dragDistance / 1000; // Visual stretch
+    hairMesh.rotation.z = -angle + Math.PI / 2;
 
-        pimples.forEach(pimple => {
-            if (!pimple.userData.popped) {
-                const distanceSq = intersectionPoint.distanceToSquared(pimple.position);
-                if (distanceSq < minDistanceSq) {
-                    minDistanceSq = distanceSq;
-                    closestPimple = pimple;
-                }
+
+    if (dragDistance > PULL_THRESHOLD) {
+        pluckHair(hairGroup, hairMesh);
+        currentPluckingAction = null; // Stop further updates
+        controls.enabled = true;
+    }
+}
+
+function onPointerUp(event) {
+    if (currentPluckingAction) {
+        // If pointer is released before threshold, the hair wasn't plucked
+        scene.remove(currentPluckingAction.hairMesh);
+        currentPluckingAction = null;
+        controls.enabled = true;
+    } else {
+        // If not plucking, handle pimple popping on click (pointerup without move)
+        if (controls.isDragging) return;
+        const intersects = getIntersects(event.clientX, event.clientY);
+         for (const intersect of intersects) {
+            if (intersect.object.userData.isPimple && !intersect.object.userData.popped) {
+                popPimple(intersect.object);
+                break; 
             }
-        });
-
-        if (closestPimple && minDistanceSq < (popRadius * popRadius)) {
-            popPimple(closestPimple);
         }
     }
+}
+
+function getIntersects(x, y) {
+    const gameRect = gameArea.getBoundingClientRect();
+    mouse.x = ((x - gameRect.left) / gameRect.width) * 2 - 1;
+    mouse.y = -((y - gameRect.top) / gameRect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    return raycaster.intersectObjects(scene.children, true);
+}
+
+function pluckHair(hairGroup, hairMesh) {
+    playPluckSound();
+    score += 2; // More points for more effort!
+    scoreEl.textContent = score;
+
+    // Confetti from the plucking spot
+    const screenPos = toScreenPosition(hairMesh, camera);
+    confetti({
+        particleCount: 50,
+        spread: 90,
+        startVelocity: 30,
+        origin: { x: screenPos.x, y: screenPos.y },
+        colors: ['#333333', '#666666', '#FFFFFF'],
+        shapes: ['square']
+    });
+
+    // Remove the visual hair spot from the face
+    faceMesh.remove(hairGroup);
+    const index = ingrownHairs.indexOf(hairGroup);
+    if (index > -1) ingrownHairs.splice(index, 1);
+
+    // Animate the pulled hair flying off screen
+    const flyAway = () => {
+        hairMesh.position.x += (Math.random() - 0.5) * 0.1;
+        hairMesh.position.y += Math.random() * 0.05 + 0.05;
+        hairMesh.position.z += (Math.random() - 0.5) * 0.1;
+        hairMesh.rotation.x += 0.2;
+        hairMesh.rotation.z += 0.2;
+        hairMesh.material.opacity -= 0.02;
+        if (hairMesh.material.opacity > 0) {
+            requestAnimationFrame(flyAway);
+        } else {
+            scene.remove(hairMesh);
+        }
+    };
+    hairMesh.material.transparent = true;
+    flyAway();
 }
 
 function popPimple(pimpleMesh) {
@@ -239,8 +377,6 @@ function popPimple(pimpleMesh) {
         scalar: Math.random() * 0.5 + 0.75
     });
 
-    createPopParticle(screenPos);
-
     // Animate pop
     pimpleMesh.material.color.set(0x5a2d2d);
     pimpleMesh.material.transparent = true;
@@ -259,31 +395,18 @@ function popPimple(pimpleMesh) {
     setTimeout(fade, 100);
 }
 
-function createPopParticle(screenPos) {
-    const particle = document.createElement('div');
-    particle.className = 'pop-particle';
-    const size = Math.random() * 20 + 15; // 15px to 35px
-    particle.style.width = `${size}px`;
-    particle.style.height = `${size}px`;
-    particle.style.left = `${screenPos.x * 100}%`;
-    particle.style.top = `${screenPos.y * 100}%`;
-    
-    particleContainer.appendChild(particle);
-    
-    // Clean up the particle from the DOM after animation
-    setTimeout(() => {
-        particle.remove();
-    }, 400); // Must match animation duration
-}
-
 function toScreenPosition(obj, camera) {
     const vector = new THREE.Vector3();
     obj.getWorldPosition(vector);
     vector.project(camera);
 
+    const gameRect = gameArea.getBoundingClientRect();
+    vector.x = (vector.x * 0.5 + 0.5) * gameRect.width + gameRect.left;
+    vector.y = (vector.y * -0.5 + 0.5) * gameRect.height + gameRect.top;
+
     return {
-        x: (vector.x * 0.5 + 0.5),
-        y: (vector.y * -0.5 + 0.5)
+        x: vector.x / window.innerWidth,
+        y: vector.y / window.innerHeight
     };
 }
 
@@ -295,18 +418,23 @@ function startGame() {
     score = 0;
     scoreEl.textContent = score;
     
-    // Clear any previous pimples
+    // Clear any previous objects
     pimples.forEach(p => faceMesh.remove(p));
     pimples.length = 0;
+    ingrownHairs.forEach(h => faceMesh.remove(h));
+    ingrownHairs.length = 0;
 
     // Initial burst of pimples
-    for(let i=0; i<8; i++) {
-        createPimple();
-    }
+    for(let i=0; i<8; i++) { createPimple(); }
+    for(let i=0; i<4; i++) { createIngrownHair(); }
     
     // Spawn pimples at random intervals
     function spawnLoop() {
-        createPimple();
+        if (Math.random() > 0.4) { // 60% chance to spawn a pimple
+             createPimple();
+        } else { // 40% chance to spawn a hair
+            createIngrownHair();
+        }
         const nextSpawnTime = Math.random() * 1200 + 400; // between 0.4s and 1.6s
         setTimeout(spawnLoop, nextSpawnTime);
     }
