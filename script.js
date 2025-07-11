@@ -227,6 +227,10 @@ function createIngrownHair() {
 
 function onPointerDown(event) {
     if (controls.isDragging) return;
+    // User must click to start audio context
+    if (!audioInitialized) {
+        initializeAudio();
+    }
 
     const intersects = getIntersects(event.clientX, event.clientY);
     if (!intersects.length) return;
@@ -258,10 +262,22 @@ function onPointerDown(event) {
 
             scene.add(hairMesh);
 
+            // Get the hair's pull direction in screen space
+            const hairUp = new THREE.Vector3(0, 1, 0);
+            hairUp.applyQuaternion(hairMesh.quaternion); // Get world-space up vector
+            
+            const hairTipWorld = worldPosition.clone().add(hairUp.multiplyScalar(0.1));
+
+            const originScreen = worldToScreen(worldPosition, camera, gameArea);
+            const tipScreen = worldToScreen(hairTipWorld, camera, gameArea);
+            
+            const pullDirection = tipScreen.clone().sub(originScreen).normalize();
+
             currentPluckingAction = {
                 hairGroup: object,
                 hairMesh: hairMesh,
                 startDrag: new THREE.Vector2(event.clientX, event.clientY),
+                pullDirectionScreen: pullDirection,
             };
             return;
         }
@@ -271,29 +287,21 @@ function onPointerDown(event) {
 function onPointerMove(event) {
     if (!currentPluckingAction) return;
 
-    const { hairMesh, startDrag, hairGroup } = currentPluckingAction;
+    const { hairMesh, startDrag, hairGroup, pullDirectionScreen } = currentPluckingAction;
     const PULL_THRESHOLD = 80; // pixels to drag
 
     const currentDrag = new THREE.Vector2(event.clientX, event.clientY);
-    const dragDistance = currentDrag.distanceTo(startDrag);
+    const dragVector = currentDrag.clone().sub(startDrag);
+    
+    // Project the drag vector onto the hair's screen-space pull direction
+    const dragDistance = dragVector.dot(pullDirectionScreen);
 
-    // Update hair length based on drag, capping at the threshold
+    // Only pull "out", ignore negative values (pushing "in")
+    if (dragDistance < 0) return;
+
+    // Update hair length based on projected drag, capping at the threshold
     const pullRatio = Math.min(dragDistance / PULL_THRESHOLD, 1.0);
     hairMesh.scale.y = pullRatio;
-
-    // Update hair orientation to follow the cursor
-    const gameRect = gameArea.getBoundingClientRect();
-    const hairScreenPos = toScreenPosition(hairMesh, camera);
-    const hairScreenVec = new THREE.Vector2(
-        (hairScreenPos.x * window.innerWidth) - gameRect.left,
-        (hairScreenPos.y * window.innerHeight) - gameRect.top
-    );
-    const pullVector = currentDrag.clone().sub(hairScreenVec).normalize();
-    const angle = Math.atan2(pullVector.y, -pullVector.x);
-
-    // Apply rotation to the hair mesh to point towards cursor
-    hairMesh.rotation.z = angle + Math.PI / 2;
-    
 
     if (dragDistance > PULL_THRESHOLD) {
         pluckHair(hairGroup, hairMesh);
@@ -311,11 +319,17 @@ function onPointerUp(event) {
     } else {
         // If not plucking, handle pimple popping on click (pointerup without move)
         if (controls.isDragging) return;
-        const intersects = getIntersects(event.clientX, event.clientY);
-         for (const intersect of intersects) {
-            if (intersect.object.userData.isPimple && !intersect.object.userData.popped) {
-                popPimple(intersect.object);
-                break; 
+        
+        // Don't pop pimples immediately on pointer up if a drag just ended
+        if (event.pointerType === 'mouse' && event.buttons !== 0) {
+            // This is a drag end, not a click
+        } else {
+             const intersects = getIntersects(event.clientX, event.clientY);
+             for (const intersect of intersects) {
+                if (intersect.object.userData.isPimple && !intersect.object.userData.popped) {
+                    popPimple(intersect.object);
+                    break; 
+                }
             }
         }
     }
@@ -335,7 +349,7 @@ function pluckHair(hairGroup, hairMesh) {
     scoreEl.textContent = score;
 
     // Confetti from the plucking spot
-    const screenPos = toScreenPosition(hairMesh, camera);
+    const screenPos = toScreenPositionForConfetti(hairMesh, camera);
     confetti({
         particleCount: 50,
         spread: 90,
@@ -379,7 +393,7 @@ function popPimple(pimpleMesh) {
     scoreEl.textContent = score;
 
     // Confetti
-    const screenPos = toScreenPosition(pimpleMesh, camera);
+    const screenPos = toScreenPositionForConfetti(pimpleMesh, camera);
     confetti({
         particleCount: Math.floor(Math.random() * 20 + 30),
         spread: 70,
@@ -408,12 +422,13 @@ function popPimple(pimpleMesh) {
     setTimeout(fade, 100);
 }
 
-function toScreenPosition(obj, camera) {
+function toScreenPositionForConfetti(obj, camera) {
     const vector = new THREE.Vector3();
+    const gameRect = gameArea.getBoundingClientRect();
+
     obj.getWorldPosition(vector);
     vector.project(camera);
 
-    const gameRect = gameArea.getBoundingClientRect();
     vector.x = (vector.x * 0.5 + 0.5) * gameRect.width + gameRect.left;
     vector.y = (vector.y * -0.5 + 0.5) * gameRect.height + gameRect.top;
 
@@ -423,10 +438,20 @@ function toScreenPosition(obj, camera) {
     };
 }
 
+// Helper to convert world coordinates to screen coordinates (within gameArea)
+function worldToScreen(worldVector, camera, element) {
+    const projectedVector = worldVector.clone().project(camera);
+    const rect = element.getBoundingClientRect();
+    const screenVector = new THREE.Vector2();
+    screenVector.x = rect.left + ((projectedVector.x + 1) / 2) * rect.width;
+    screenVector.y = rect.top + ((-projectedVector.y + 1) / 2) * rect.height;
+    return screenVector;
+}
+
 // --- Game Initialization ---
 function startGame() {
     // Initial audio setup requires user interaction
-    document.body.addEventListener('click', initializeAudio, { once: true });
+    document.body.addEventListener('pointerdown', initializeAudio, { once: true });
     
     score = 0;
     scoreEl.textContent = score;
