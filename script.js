@@ -20,6 +20,7 @@ const ingrownHairs = [];
 const MAX_PIMPLES = 15;
 const MAX_INGROWN_HAIRS = 8;
 let currentPluckingAction = null;
+const PULL_THRESHOLD = 80; // pixels to drag for a successful pluck
 
 function init3D() {
     scene = new THREE.Scene();
@@ -246,38 +247,30 @@ function onPointerDown(event) {
         if (object.userData.isIngrownHair) {
             controls.enabled = false; // Disable camera controls during pluck
 
-            const hairGeometry = new THREE.CylinderGeometry(0.003, 0.003, 0.2, 6); // Set a max length of 0.2
-            hairGeometry.translate(0, 0.1, 0); // Anchor at the bottom
+            // Create the visible hair mesh
+            const hairGeometry = new THREE.CylinderGeometry(0.003, 0.003, 1, 6); // Use length 1 for easy scaling
+            hairGeometry.translate(0, 0.5, 0); // Anchor at the bottom
             const hairMaterial = new THREE.MeshBasicMaterial({ color: 0x24170d });
             const hairMesh = new THREE.Mesh(hairGeometry, hairMaterial);
             
-            // Set initial scale to 0 to prevent glitching
-            hairMesh.scale.y = 0;
+            // Get base position and orientation from the hair "mound"
+            const hairBasePosition = new THREE.Vector3();
+            object.getWorldPosition(hairBasePosition);
+            hairMesh.position.copy(hairBasePosition);
 
-            // Position and orient the base of the hair
-            const worldPosition = new THREE.Vector3();
-            object.getWorldPosition(worldPosition);
-            hairMesh.position.copy(worldPosition);
-            hairMesh.quaternion.copy(object.quaternion);
-
+            // Set initial scale to almost 0 to hide it
+            hairMesh.scale.set(1, 0.001, 1);
             scene.add(hairMesh);
 
-            // Get the hair's pull direction in screen space
-            const hairUp = new THREE.Vector3(0, 1, 0);
-            hairUp.applyQuaternion(hairMesh.quaternion); // Get world-space up vector
+            // Create a plane for raycasting, facing the camera, at the hair's origin
+            const planeNormal = camera.position.clone().sub(hairBasePosition).normalize();
+            const dragPlane = new THREE.Plane(planeNormal, -hairBasePosition.dot(planeNormal));
             
-            const hairTipWorld = worldPosition.clone().add(hairUp.multiplyScalar(0.1));
-
-            const originScreen = worldToScreen(worldPosition, camera, gameArea);
-            const tipScreen = worldToScreen(hairTipWorld, camera, gameArea);
-            
-            const pullDirection = tipScreen.clone().sub(originScreen).normalize();
-
             currentPluckingAction = {
                 hairGroup: object,
                 hairMesh: hairMesh,
-                startDrag: new THREE.Vector2(event.clientX, event.clientY),
-                pullDirectionScreen: pullDirection,
+                dragPlane: dragPlane,
+                startScreenPos: new THREE.Vector2(event.clientX, event.clientY),
             };
             return;
         }
@@ -287,26 +280,35 @@ function onPointerDown(event) {
 function onPointerMove(event) {
     if (!currentPluckingAction) return;
 
-    const { hairMesh, startDrag, hairGroup, pullDirectionScreen } = currentPluckingAction;
-    const PULL_THRESHOLD = 80; // pixels to drag
+    const { hairMesh, dragPlane, hairGroup, startScreenPos } = currentPluckingAction;
 
-    const currentDrag = new THREE.Vector2(event.clientX, event.clientY);
-    const dragVector = currentDrag.clone().sub(startDrag);
-    
-    // Project the drag vector onto the hair's screen-space pull direction
-    const dragDistance = dragVector.dot(pullDirectionScreen);
+    // Get the current cursor position in normalized device coordinates
+    const gameRect = gameArea.getBoundingClientRect();
+    mouse.x = ((event.clientX - gameRect.left) / gameRect.width) * 2 - 1;
+    mouse.y = -((event.clientY - gameRect.top) / gameRect.height) * 2 + 1;
 
-    // Only pull "out", ignore negative values (pushing "in")
-    if (dragDistance < 0) return;
+    // Raycast from camera to the drag plane to find the 3D cursor position
+    raycaster.setFromCamera(mouse, camera);
+    const cursorPoint3D = new THREE.Vector3();
+    raycaster.ray.intersectPlane(dragPlane, cursorPoint3D);
 
-    // Update hair length based on projected drag, capping at the threshold
-    const pullRatio = Math.min(dragDistance / PULL_THRESHOLD, 1.0);
-    hairMesh.scale.y = pullRatio;
+    if (cursorPoint3D) {
+        // Vector from hair base to the cursor's 3D position
+        const pullVector = cursorPoint3D.clone().sub(hairMesh.position);
+        const pullDistance = pullVector.length();
 
-    if (dragDistance > PULL_THRESHOLD) {
-        pluckHair(hairGroup, hairMesh);
-        currentPluckingAction = null; // Stop further updates
-        controls.enabled = true;
+        // Update hair length and orientation
+        hairMesh.scale.y = pullDistance;
+        hairMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pullVector.normalize());
+        
+        // Check if the 2D drag distance has exceeded the threshold
+        const currentScreenPos = new THREE.Vector2(event.clientX, event.clientY);
+        const screenDragDistance = currentScreenPos.distanceTo(startScreenPos);
+
+        if (screenDragDistance > PULL_THRESHOLD) {
+            pluckHair(hairGroup, hairMesh);
+            currentPluckingAction = null; // Stop further updates
+        }
     }
 }
 
@@ -315,14 +317,18 @@ function onPointerUp(event) {
         // If pointer is released before threshold, the hair wasn't plucked
         scene.remove(currentPluckingAction.hairMesh);
         currentPluckingAction = null;
-        controls.enabled = true;
+        // Don't re-enable controls immediately, wait for the next mousedown
+        // This prevents the camera from jumping after a failed pluck.
     } else {
+        // Re-enable controls if no plucking action was in progress.
+        controls.enabled = true;
+        
         // If not plucking, handle pimple popping on click (pointerup without move)
         if (controls.isDragging) return;
         
-        // Don't pop pimples immediately on pointer up if a drag just ended
+        // This logic helps differentiate a click from the end of a drag.
         if (event.pointerType === 'mouse' && event.buttons !== 0) {
-            // This is a drag end, not a click
+           // This is likely a drag end, not a click, do nothing.
         } else {
              const intersects = getIntersects(event.clientX, event.clientY);
              for (const intersect of intersects) {
@@ -371,14 +377,15 @@ function pluckHair(hairGroup, hairMesh) {
         hairMesh.position.z += (Math.random() - 0.5) * 0.1;
         hairMesh.rotation.x += 0.2;
         hairMesh.rotation.z += 0.2;
-        hairMesh.material.opacity -= 0.02;
         if (hairMesh.material.opacity > 0) {
+            hairMesh.material.opacity -= 0.02;
             requestAnimationFrame(flyAway);
         } else {
             scene.remove(hairMesh);
         }
     };
     hairMesh.material.transparent = true;
+    hairMesh.material.opacity = 1.0;
     flyAway();
 }
 
@@ -482,7 +489,7 @@ function startGame() {
 
 function animate() {
     requestAnimationFrame(animate);
-    if(controls) controls.update(); // update controls on each frame
+    if(controls && controls.enabled) controls.update(); // only update controls if they are enabled
     renderer.render(scene, camera);
 }
 
