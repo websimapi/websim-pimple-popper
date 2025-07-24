@@ -6,6 +6,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const gameArea = document.getElementById('game-area');
 const scoreEl = document.getElementById('score');
 const loadingOverlay = document.getElementById('loading-overlay');
+const resetButton = document.getElementById('reset-button');
+
 let score = 0;
 let audioContext;
 let popSoundBuffer;
@@ -13,7 +15,7 @@ let pluckSoundBuffer;
 let audioInitialized = false;
 
 // --- Three.js Setup ---
-let scene, camera, renderer, faceMesh, controls;
+let scene, camera, renderer, faceGroup, faceWithMorphs, controls;
 let raycaster, mouse;
 const pimples = [];
 const ingrownHairs = [];
@@ -21,6 +23,13 @@ const MAX_PIMPLES = 15;
 const MAX_INGROWN_HAIRS = 8;
 let currentPluckingAction = null;
 const PULL_THRESHOLD = 80; // pixels to drag for a successful pluck
+let spawnTimeout;
+
+// --- Expression Animation State ---
+let isAnimatingExpression = false;
+let expressionStartTime = 0;
+let expressionDuration = 0;
+let expressionIntensity = 0;
 
 function init3D() {
     scene = new THREE.Scene();
@@ -60,6 +69,7 @@ function init3D() {
     gameArea.addEventListener('pointerup', onPointerUp);
     gameArea.addEventListener('pointerleave', onPointerUp); // Treat leaving the area as pointer up
     window.addEventListener('resize', onWindowResize);
+    resetButton.addEventListener('click', startGame);
 }
 
 function loadFaceModel() {
@@ -68,7 +78,7 @@ function loadFaceModel() {
     loader.load(
         'https://threejs.org/examples/models/gltf/LeePerrySmith/LeePerrySmith.glb',
         (gltf) => {
-            faceMesh = gltf.scene;
+            faceGroup = gltf.scene;
             const skinTexture = new THREE.TextureLoader().load('skin.png');
             skinTexture.wrapS = THREE.RepeatWrapping;
             skinTexture.wrapT = THREE.RepeatWrapping;
@@ -78,10 +88,12 @@ function loadFaceModel() {
                 map: skinTexture,
                 roughness: 0.6,
                 metalness: 0.1,
+                morphTargets: true // Enable morph targets
             });
 
-            faceMesh.traverse((child) => {
+            faceGroup.traverse((child) => {
                 if (child.isMesh) {
+                    faceWithMorphs = child; // Store reference to the mesh with morphs
                     child.material = material;
                     // Flag the face mesh to distinguish from pimples
                     child.userData.isFace = true; 
@@ -91,9 +103,9 @@ function loadFaceModel() {
                 }
             });
             
-            faceMesh.scale.set(0.7, 0.7, 0.7);
-            faceMesh.position.y = -0.5;
-            scene.add(faceMesh);
+            faceGroup.scale.set(0.7, 0.7, 0.7);
+            faceGroup.position.y = -0.5;
+            scene.add(faceGroup);
             loadingOverlay.style.display = 'none';
             startGame();
         },
@@ -155,13 +167,56 @@ function playPluckSound() {
     source.start(0);
 }
 
+// --- Expression Logic ---
+function triggerPainExpression(intensity = 1.0, duration = 800) {
+    if (isAnimatingExpression || !faceWithMorphs) return;
+
+    isAnimatingExpression = true;
+    expressionStartTime = performance.now();
+    expressionDuration = duration;
+    expressionIntensity = intensity;
+}
+
+function updateExpressionAnimation(now) {
+    if (!isAnimatingExpression || !faceWithMorphs?.morphTargetDictionary) return;
+
+    const elapsedTime = now - expressionStartTime;
+    const progress = Math.min(elapsedTime / expressionDuration, 1.0);
+
+    // Create a curve: quickly rise, hold briefly, then slowly fall.
+    let influence;
+    if (progress < 0.2) { // Ramp up
+        influence = (progress / 0.2);
+    } else if (progress < 0.5) { // Hold
+        influence = 1.0;
+    } else { // Ramp down
+        influence = 1.0 - ((progress - 0.5) / 0.5);
+    }
+    
+    influence *= expressionIntensity;
+
+    const dict = faceWithMorphs.morphTargetDictionary;
+    const influences = faceWithMorphs.morphTargetInfluences;
+
+    if (dict.EyesClosed !== undefined) influences[dict.EyesClosed] = influence * 0.8;
+    if (dict.MouthOpen !== undefined) influences[dict.MouthOpen] = influence * 0.5;
+    if (dict.BrowsDown_Left !== undefined) influences[dict.BrowsDown_Left] = influence;
+    if (dict.BrowsDown_Right !== undefined) influences[dict.BrowsDown_Right] = influence;
+    
+    if (progress >= 1.0) {
+        isAnimatingExpression = false;
+        // Reset all influences to be safe
+        for (let i = 0; i < influences.length; i++) {
+            influences[i] = 0;
+        }
+    }
+}
+
 // --- Pimple Logic ---
 function createPimple() {
-    if (!faceMesh || pimples.length >= MAX_PIMPLES) return;
+    if (!faceGroup || pimples.length >= MAX_PIMPLES) return;
 
-    let targetMesh;
-    // Traverse to find only the face mesh, not other pimples.
-    faceMesh.traverse(child => { if(child.isMesh && child.userData.isFace) targetMesh = child; });
+    const targetMesh = faceWithMorphs;
     if(!targetMesh) {
         console.error("Could not find face mesh to spawn pimple on.");
         return;
@@ -185,16 +240,15 @@ function createPimple() {
     pimpleMesh.userData.isPimple = true;
     pimpleMesh.userData.popped = false;
 
-    faceMesh.add(pimpleMesh);
+    faceGroup.add(pimpleMesh);
     pimples.push(pimpleMesh);
 }
 
 // --- Ingrown Hair Logic ---
 function createIngrownHair() {
-    if (!faceMesh || ingrownHairs.length >= MAX_INGROWN_HAIRS) return;
+    if (!faceGroup || ingrownHairs.length >= MAX_INGROWN_HAIRS) return;
 
-    let targetMesh;
-    faceMesh.traverse(child => { if (child.isMesh && child.userData.isFace) targetMesh = child; });
+    const targetMesh = faceWithMorphs;
     if (!targetMesh) return;
 
     const positionAttribute = targetMesh.geometry.getAttribute('initialPosition');
@@ -222,7 +276,7 @@ function createIngrownHair() {
     hairGroup.userData.base = moundMesh;
     hairGroup.userData.tip = tipMesh;
 
-    faceMesh.add(hairGroup);
+    faceGroup.add(hairGroup);
     ingrownHairs.push(hairGroup);
 }
 
@@ -353,6 +407,7 @@ function pluckHair(hairGroup, hairMesh) {
     playPluckSound();
     score += 2; // More points for more effort!
     scoreEl.textContent = score;
+    triggerPainExpression(1.0, 1000); // More intense/longer expression for hair
 
     // Confetti from the plucking spot
     const screenPos = toScreenPositionForConfetti(hairMesh, camera);
@@ -366,7 +421,7 @@ function pluckHair(hairGroup, hairMesh) {
     });
 
     // Remove the visual hair spot from the face
-    faceMesh.remove(hairGroup);
+    faceGroup.remove(hairGroup);
     const index = ingrownHairs.indexOf(hairGroup);
     if (index > -1) ingrownHairs.splice(index, 1);
 
@@ -393,6 +448,7 @@ function popPimple(pimpleMesh) {
     if (pimpleMesh.userData.popped) return;
 
     playPopSound();
+    triggerPainExpression(0.8, 600); // Trigger a slightly less intense expression
     
     pimpleMesh.userData.popped = true;
 
@@ -418,7 +474,7 @@ function popPimple(pimpleMesh) {
     const fade = () => {
         opacity -= 0.05;
         if (opacity <= 0) {
-            faceMesh.remove(pimpleMesh);
+            faceGroup.remove(pimpleMesh);
             const index = pimples.indexOf(pimpleMesh);
             if (index > -1) pimples.splice(index, 1);
         } else {
@@ -462,11 +518,14 @@ function startGame() {
     
     score = 0;
     scoreEl.textContent = score;
+
+    // Stop any previous spawn loops
+    clearTimeout(spawnTimeout);
     
     // Clear any previous objects
-    pimples.forEach(p => faceMesh.remove(p));
+    pimples.forEach(p => faceGroup.remove(p));
     pimples.length = 0;
-    ingrownHairs.forEach(h => faceMesh.remove(h));
+    ingrownHairs.forEach(h => faceGroup.remove(h));
     ingrownHairs.length = 0;
 
     // Initial burst of pimples
@@ -481,17 +540,20 @@ function startGame() {
             createIngrownHair();
         }
         const nextSpawnTime = Math.random() * 1200 + 400; // between 0.4s and 1.6s
-        setTimeout(spawnLoop, nextSpawnTime);
+        spawnTimeout = setTimeout(spawnLoop, nextSpawnTime);
     }
     
     spawnLoop();
 }
 
-function animate() {
+function animate(now) {
     requestAnimationFrame(animate);
+    
+    updateExpressionAnimation(now);
+
     if(controls && controls.enabled) controls.update(); // only update controls if they are enabled
     renderer.render(scene, camera);
 }
 
 init3D();
-animate();
+animate(performance.now());
