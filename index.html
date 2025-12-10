@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pimple Popper 3D</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Pimple Popper 3D: HD Edition</title>
     <link rel="stylesheet" href="style.css">
     <script type="importmap">
     {
@@ -16,18 +16,32 @@
     </script>
 </head>
 <body>
-    <h1>Pimple Popper 3D</h1>
-    <div id="game-info">
-        <span>Score: <span id="score">0</span></span>
-        <button id="reset-button">New Face</button>
-    </div>
-    <div id="game-area">
-        <div id="loading-overlay">
-            <div id="loading-text">Loading Face...</div>
+    <div id="ui-layer">
+        <div id="score-container">
+            <div id="score-label">SCORE</div>
+            <div id="score">0</div>
+        </div>
+        <div id="combo-container" class="hidden">
+            <div id="combo-count">x1</div>
+            <div id="combo-label">COMBO</div>
+        </div>
+        <div id="instructions">
+            <p><strong>Hold</strong> to squeeze pimples.</p>
+            <p><strong>Drag</strong> hairs to pluck.</p>
         </div>
     </div>
-    <div id="instructions">Click pimples to pop them. Click and drag to pull out ingrown hairs!</div>
+    
+    <canvas id="splat-canvas"></canvas>
+
+    <div id="game-area">
+        <div id="loading-overlay">
+            <div class="loader"></div>
+            <div id="loading-text">Loading Face Texture...</div>
+        </div>
+    </div>
+    
     <script type="module" src="script.js"></script>
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
 </body>
 </html>
+
