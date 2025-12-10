@@ -4,10 +4,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // --- Configuration ---
 const CONFIG = {
-    MAX_PIMPLES: 12,
-    MAX_HAIRS: 6,
+    MAX_PIMPLES: 10,
+    MAX_HAIRS: 8,
     SQUEEZE_TIME: 800, // ms to fully squeeze
-    HAIR_PULL_THRESHOLD: 0.15, // World units
+    HAIR_PULL_THRESHOLD: 0.25, // World units - Longer pull needed
     COMBO_WINDOW: 2000, // ms
     GRAVITY: -9.8
 };
@@ -195,62 +195,70 @@ class Pimple {
         this.position = position;
         this.normal = normal;
         this.isPopped = false;
-        this.squeezeStart = 0;
         this.squeezeFactor = 0;
 
-        // Visuals
         this.group = new THREE.Group();
         this.group.position.copy(position);
         this.group.lookAt(position.clone().add(normal));
 
-        // Base (Red swelling)
-        const baseGeo = new THREE.SphereGeometry(0.06, 16, 8);
-        baseGeo.scale(1, 0.3, 1);
-        const baseMat = new THREE.MeshStandardMaterial({ color: 0xff6b6b, roughness: 0.3 });
+        // Scale variation
+        this.group.scale.setScalar(0.8 + Math.random() * 0.4);
+
+        // 1. Inflamed Base (Smoother blending)
+        const baseGeo = new THREE.SphereGeometry(0.08, 16, 16);
+        baseGeo.scale(1, 1, 0.3); // Flatten
+        const baseMat = new THREE.MeshStandardMaterial({ 
+            color: 0xff5e5e, 
+            roughness: 0.4,
+            metalness: 0.1
+        });
         this.base = new THREE.Mesh(baseGeo, baseMat);
-        this.base.position.z = 0.01;
+        this.base.position.z = 0.005; 
         this.group.add(this.base);
 
-        // Head (White pus)
-        const headGeo = new THREE.SphereGeometry(0.025, 12, 8);
-        const headMat = new THREE.MeshStandardMaterial({ color: 0xfffae6, roughness: 0.1, metalness: 0.1 });
+        // 2. The Head (Pus)
+        const headGeo = new THREE.SphereGeometry(0.035, 16, 16);
+        headGeo.scale(1, 1, 0.8);
+        const headMat = new THREE.MeshStandardMaterial({ 
+            color: 0xfffdd0, 
+            roughness: 0.1, // Shiny / Oily
+            metalness: 0.1,
+            emissive: 0x222211,
+            emissiveIntensity: 0.1
+        });
         this.head = new THREE.Mesh(headGeo, headMat);
-        this.head.position.z = 0.03;
+        this.head.position.z = 0.025;
         this.group.add(this.head);
 
-        // Add hidden collider for easier clicking
-        const colliderGeo = new THREE.SphereGeometry(0.08, 8, 8);
+        // 3. Collider
+        const colliderGeo = new THREE.SphereGeometry(0.1, 8, 8);
         const colliderMat = new THREE.MeshBasicMaterial({ visible: false });
         this.collider = new THREE.Mesh(colliderGeo, colliderMat);
         this.group.add(this.collider);
         
-        // Link wrapper to mesh for raycasting
         this.collider.userData.entity = this;
-
         faceGroup.add(this.group);
     }
 
     update(dt) {
         if (this.isPopped) return;
 
-        // Visual throbbing if untouched
         if (this.squeezeFactor === 0) {
-            const scale = 1 + Math.sin(Date.now() * 0.003) * 0.05;
-            this.head.scale.setScalar(scale);
+            // Idle throb
+            const s = 1 + Math.sin(Date.now() * 0.002) * 0.03;
+            this.head.scale.set(s, s, 0.8 * s);
         } else {
-            // Squeeze deformation
-            // Base spreads out, Head bulges out
-            const baseScale = 1 + this.squeezeFactor * 0.5; // wider
-            const headBulge = 1 + this.squeezeFactor * 1.5; // bigger
-            const headZ = 0.03 + this.squeezeFactor * 0.04; // pushes out
+            // Squeeze Feedback
+            const f = this.squeezeFactor;
+            
+            // Base widens and gets angrier red
+            this.base.scale.set(1 + f*0.4, 1 + f*0.4, 0.3 - f*0.1);
+            this.base.material.color.setHSL(0.0, 0.8, 0.6 - f*0.2);
 
-            this.base.scale.set(baseScale, 0.3, baseScale);
-            this.base.material.color.setHSL(0.99, 0.8, 0.6 - this.squeezeFactor * 0.2); // gets redder
-            
-            this.head.scale.setScalar(headBulge);
-            this.head.position.z = headZ;
-            
-            // Shake effect handled in loop
+            // Head bulges out significantly
+            const headScale = 1 + f * 0.8;
+            this.head.scale.set(headScale, headScale, 0.8 + f * 1.0);
+            this.head.position.z = 0.025 + f * 0.04;
         }
     }
 
@@ -259,11 +267,20 @@ class Pimple {
         this.group.remove(this.head);
         this.group.remove(this.collider);
         
-        // Crater effect
-        this.base.geometry = new THREE.RingGeometry(0.01, 0.05, 16);
-        this.base.material.color.setHex(0x5a2d2d); // dark red
-        this.base.scale.set(1, 1, 1);
-        this.base.position.z = 0.005;
+        // Visual Aftermath: Crater
+        const craterGeo = new THREE.CircleGeometry(0.04, 12);
+        const craterMat = new THREE.MeshStandardMaterial({ 
+            color: 0x3d0000, 
+            roughness: 0.8, 
+            side: THREE.DoubleSide 
+        });
+        const crater = new THREE.Mesh(craterGeo, craterMat);
+        crater.position.z = 0.01;
+        this.group.add(crater);
+
+        // Shrink inflammation
+        this.base.scale.set(0.8, 0.8, 0.1);
+        this.base.material.color.setHex(0xaa4444);
 
         playSound(popBuffer, 0.8 + Math.random() * 0.4);
         spawnParticles(this.group.position, this.normal, 'pus');
@@ -271,12 +288,12 @@ class Pimple {
         addScore(100);
         triggerHaptic();
 
-        // Remove after delay
+        // Cleanup
         setTimeout(() => {
             if(faceGroup) faceGroup.remove(this.group);
             const idx = gameObjects.indexOf(this);
             if (idx > -1) gameObjects.splice(idx, 1);
-        }, 5000);
+        }, 8000);
     }
 }
 
@@ -285,37 +302,50 @@ class IngrownHair {
         this.type = 'hair';
         this.position = position;
         this.normal = normal;
-        this.restLength = 0.15; // Visual length (mostly under skin)
-        this.pullLength = 0;
         this.isPlucked = false;
 
         this.group = new THREE.Group();
         this.group.position.copy(position);
         
         // Align Y axis to normal
-        this.quaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
-        this.group.setRotationFromQuaternion(this.quaternion);
+        const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+        this.group.setRotationFromQuaternion(q);
+        // Random spin around normal
+        this.group.rotateY(Math.random() * Math.PI * 2);
 
-        // Visual bump
-        const bumpGeo = new THREE.SphereGeometry(0.02, 8, 8);
-        bumpGeo.scale(1, 0.5, 1);
-        const bumpMat = new THREE.MeshStandardMaterial({ color: 0xd69d85 });
+        // 1. Inflamed Pore (Bump)
+        const bumpGeo = new THREE.CylinderGeometry(0.03, 0.05, 0.015, 12);
+        const bumpMat = new THREE.MeshStandardMaterial({ color: 0xd65555, roughness: 0.5 });
         this.bump = new THREE.Mesh(bumpGeo, bumpMat);
+        this.bump.position.y = 0.005;
         this.group.add(this.bump);
 
-        // Hair Mesh (Pivot at bottom)
-        const hairGeo = new THREE.CylinderGeometry(0.002, 0.002, 1, 5);
-        hairGeo.translate(0, 0.5, 0); // Anchor at base
-        const hairMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 });
+        // 2. Pore opening (Dark spot)
+        const poreGeo = new THREE.CircleGeometry(0.01, 8);
+        const poreMat = new THREE.MeshStandardMaterial({ color: 0x1a0a0a, roughness: 1.0 });
+        this.pore = new THREE.Mesh(poreGeo, poreMat);
+        this.pore.position.y = 0.013;
+        this.pore.rotation.x = -Math.PI / 2;
+        this.group.add(this.pore);
+
+        // 3. Hair (Mesh)
+        // Using a cylinder that we stretch.
+        const hairGeo = new THREE.CylinderGeometry(0.003, 0.003, 1, 5);
+        hairGeo.translate(0, 0.5, 0); // Pivot at base (0,0,0)
+        const hairMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.9 });
         this.hairMesh = new THREE.Mesh(hairGeo, hairMat);
-        this.hairMesh.scale.set(1, 0.02, 1); // Just a tiny nub visible initially
-        this.group.add(this.hairMesh);
+        this.hairMesh.scale.set(1, 0.03, 1); // Start short (stub)
+        
+        // We wrap hairMesh in a pivot group so we can rotate it without messing up geometry transform
+        this.hairPivot = new THREE.Group();
+        this.hairPivot.add(this.hairMesh);
+        this.group.add(this.hairPivot);
 
         // Collider
-        const colliderGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.1);
+        const colliderGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.15);
         const colliderMat = new THREE.MeshBasicMaterial({ visible: false });
         this.collider = new THREE.Mesh(colliderGeo, colliderMat);
-        this.collider.position.y = 0.05;
+        this.collider.position.y = 0.07;
         this.collider.userData.entity = this;
         this.group.add(this.collider);
 
@@ -323,26 +353,23 @@ class IngrownHair {
     }
 
     updateDrag(rayPoint) {
-        // rayPoint is in world space.
-        // Convert to local space of the hair group (where Y is up/normal)
+        // rayPoint in World Space
         const localPoint = this.group.worldToLocal(rayPoint.clone());
-        
-        // We only care about pulling "Up" (positive Y) and maybe some bend (X/Z)
-        // Clamp Y to not go below surface
         localPoint.y = Math.max(0.01, localPoint.y);
 
-        // The hair vector is from (0,0,0) to localPoint
         const len = localPoint.length();
         
-        // Visual Stretch
-        this.hairMesh.scale.set(1, len, 1);
+        // Stretch visual
+        // Limit stretch so it doesn't look infinite if bugged
+        const visualLen = Math.min(len, 2.0);
+        this.hairMesh.scale.set(1, visualLen, 1);
         
-        // Orientation: point at cursor
+        // Point at cursor
         const up = new THREE.Vector3(0, 1, 0);
         const targetDir = localPoint.normalize();
-        this.hairMesh.quaternion.setFromUnitVectors(up, targetDir);
+        this.hairPivot.quaternion.setFromUnitVectors(up, targetDir);
 
-        return len; // Return drag distance
+        return len;
     }
 
     pluck() {
@@ -350,7 +377,13 @@ class IngrownHair {
         faceGroup.remove(this.group);
         
         playSound(pluckBuffer, 1.0 + Math.random() * 0.5);
-        spawnParticles(this.group.position, this.normal, 'hair'); // Spawns the loose hair
+        
+        // Pass the final orientation to the particle spawner so it aligns
+        // Convert local pivot rotation to world
+        const worldQuat = new THREE.Quaternion();
+        this.hairPivot.getWorldQuaternion(worldQuat);
+        
+        spawnParticles(this.group.position, worldQuat, 'hair_pluck'); 
         addScore(150);
         triggerHaptic();
 
@@ -359,9 +392,8 @@ class IngrownHair {
     }
 
     reset() {
-        // Snap back animation could go here
-        this.hairMesh.scale.set(1, 0.02, 1);
-        this.hairMesh.quaternion.identity();
+        this.hairMesh.scale.set(1, 0.03, 1);
+        this.hairPivot.quaternion.identity();
     }
 }
 
@@ -535,7 +567,7 @@ function spawnEntity() {
 
     // Basic collision check (too close to others?)
     for (let obj of gameObjects) {
-        if (obj.position.distanceTo(pos) < 0.1) return; // Too close, try again next frame
+        if (obj.position.distanceTo(pos) < 0.18) return; // Increased spacing for separation
     }
 
     const isHair = Math.random() > 0.6;
@@ -551,39 +583,71 @@ function spawnEntity() {
 
 // --- FX ---
 
-function spawnParticles(pos, normal, type) {
+function spawnParticles(pos, rotationOrNormal, type) {
     if (type === 'pus') {
-        // Burst of yellow goo
-        const count = 15;
+        // Debris burst
+        const normal = rotationOrNormal;
+        const count = 12;
+        const cols = [0xfffdd0, 0xffeb3b, 0xffffff];
+        
         for(let i=0; i<count; i++) {
+            const col = cols[Math.floor(Math.random() * cols.length)];
             const mesh = new THREE.Mesh(
-                new THREE.SphereGeometry(Math.random() * 0.01 + 0.005, 4, 4),
-                new THREE.MeshStandardMaterial({ color: 0xfffdd0, roughness: 0.2 })
+                new THREE.SphereGeometry(Math.random() * 0.015 + 0.005, 4, 4),
+                new THREE.MeshStandardMaterial({ color: col, roughness: 0.1, metalness: 0.1 })
             );
             
-            // Offset slightly from surface
             mesh.position.copy(pos).add(normal.clone().multiplyScalar(0.02));
             
-            // Random velocity outward
-            const vel = normal.clone().add(
-                new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5)
-            ).normalize().multiplyScalar(Math.random() * 0.1 + 0.05);
+            // Cone spray
+            const sprayDir = normal.clone().add(
+                new THREE.Vector3((Math.random()-0.5)*0.8, (Math.random()-0.5)*0.8, (Math.random()-0.5)*0.8)
+            ).normalize();
+            
+            const vel = sprayDir.multiplyScalar(Math.random() * 0.15 + 0.05);
 
             scene.add(mesh);
-            particles.push({ mesh, vel, type: 'pus', life: 1.0 });
+            particles.push({ mesh, vel, type: 'pus', life: 0.8 + Math.random()*0.4 });
         }
-    } else if (type === 'hair') {
-        // The singular hair flying away
-        const geometry = new THREE.CylinderGeometry(0.002, 0.002, 0.2, 3);
-        const material = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.position.copy(pos);
-        mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), normal);
+    } else if (type === 'hair_pluck') {
+        // The curled hair flying away with root
+        const quat = rotationOrNormal; // It's a quaternion passed from IngrownHair
+
+        const group = new THREE.Group();
+        group.position.copy(pos);
+        group.quaternion.copy(quat);
+
+        // Recreate the hair visual but with a bulb
+        const hairGeo = new THREE.CylinderGeometry(0.003, 0.003, 0.25, 5); // Fixed length for the loose hair
+        hairGeo.translate(0, 0.125, 0); // Center it
+        const hairMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a });
+        const hair = new THREE.Mesh(hairGeo, hairMat);
         
-        const vel = normal.clone().multiplyScalar(0.2);
+        // Add random bend/curl visual
+        hair.rotation.z = (Math.random() - 0.5) * 0.5;
+
+        // Bulb
+        const bulb = new THREE.Mesh(
+            new THREE.SphereGeometry(0.008, 6, 6),
+            new THREE.MeshStandardMaterial({ color: 0xffffff })
+        );
+        bulb.position.y = 0; // At the bottom
+        hair.add(bulb);
         
-        scene.add(mesh);
-        particles.push({ mesh, vel, type: 'hair', life: 1.5, rot: new THREE.Vector3(Math.random(), Math.random(), Math.random()) });
+        group.add(hair);
+        
+        // Initial velocity is roughly along the hair's UP vector
+        const flyDir = new THREE.Vector3(0, 1, 0).applyQuaternion(quat).normalize();
+        const vel = flyDir.multiplyScalar(0.2);
+
+        scene.add(group);
+        particles.push({ 
+            mesh: group, 
+            vel, 
+            type: 'hair', 
+            life: 2.0, 
+            rot: new THREE.Vector3(Math.random()*0.1, Math.random()*0.1, Math.random()*0.1) 
+        });
     }
 }
 
